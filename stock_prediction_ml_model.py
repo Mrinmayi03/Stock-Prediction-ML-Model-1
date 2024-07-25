@@ -10,6 +10,8 @@ import streamlit as st
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
 from datetime import datetime, timedelta
+from keras.layers import Dense , Dropout , LSTM
+from keras.models import Sequential
 
 
 
@@ -30,6 +32,14 @@ st.write(data)
 
 
 close_data = data[['Close']]
+
+st.subheader("General trend of the closing amount of the stock: ")
+fig0 = plt.figure(figsize=(8,6))
+plt.plot(close_data)
+plt.ylabel("Price")
+plt.show()
+st.pyplot(fig0) 
+
 train_data , test_data = train_test_split(close_data , test_size=0.2, shuffle=False)
 
 
@@ -192,3 +202,99 @@ future_predictions_df = pd.DataFrame({
 
 st.subheader("Future Predictions: ")
 st.write(future_predictions_df)
+
+#######################################################################################################################################
+
+'''
+From here on , we will try to build a model that learns from the errors made in predicting future prices
+and then predict the future dates more accurately.
+'''
+# Convert the string to a datetime object
+start_date_future = datetime.strptime(end_date , '%Y-%m-%d')
+
+# Define the number of days to add
+days_to_add = 100
+
+# Add the days to the start date
+end_date_future = start_date_future + timedelta(days=days_to_add)
+
+# Convert the result back to a string
+end_date_future = end_date_future.strftime('%Y-%m-%d')
+
+# print("Start Date:", start_date_future)
+# print("End Date:", end_date_future)
+
+
+data_with_actual_future_prices = yf.download(stock , start_date_future , end_date_future)
+
+#Selecting only the Close column in this future dataset:
+data_with_actual_future_prices = data_with_actual_future_prices[['Close']]
+
+future_predictions_df = future_predictions_df.merge(data_with_actual_future_prices , on = 'Date' , suffixes =('' , '_Actual'))
+
+st.subheader("Future dates Predicted and Actual Prices: ")
+st.write(future_predictions_df)
+
+future_predictions_df['Prediction Error'] = future_predictions_df['Close'] - future_predictions_df['Predicted Price']
+st.write(future_predictions_df)
+
+#Creating sequences for the model:
+def create_sequences(data, time_steps):
+    x, y = [], []
+    for i in range(len(data) - time_steps):
+        seq = data[i:i+time_steps]
+        x.append(seq)
+        y.append(data[i + time_steps])
+    return np.array(x), np.array(y)
+
+
+#Normalizing the data:
+scaler = MinMaxScaler(feature_range=(0,1))
+future_predictions_df['Prediction Error'] = scaler.fit_transform(future_predictions_df[['Prediction Error']])
+
+st.subheader("Future prediction dataset with normalized data:")
+st.write(future_predictions_df)
+
+time_steps = 100
+x_future_seq , y_future_seq = create_sequences(future_predictions_df['Prediction Error'].values, time_steps)
+
+# scaler = MinMaxScaler()
+# x_future_seq = scaler.fit_transform(x_future_seq)
+# y_future_seq = scaler.transform(y_future_seq.reshape(-1, 1))
+
+
+#Splitting the data into training and testing for the model:
+x_future_train, x_future_test, y_future_train, y_future_test = train_test_split(x_future_seq , y_future_seq , test_size=0.2, shuffle=False)
+
+#Redefining the LSTM Model:
+model_future = Sequential()
+
+model_future.add(LSTM(units = 50 , activation = 'relu' , return_sequences = True, input_shape = (x.shape[1] , 1)))
+model_future.add(Dropout(0.2))
+
+model_future.add(LSTM(units = 60 , activation = 'relu' , return_sequences = True))
+model_future.add(Dropout(0.3))
+
+model_future.add(LSTM(units = 80 , activation = 'relu' , return_sequences = True))
+model_future.add(Dropout(0.3))
+
+model_future.add(LSTM(units = 120 , activation = 'relu'))
+model_future.add(Dropout(0.5))
+
+model_future.add(Dense(units = 1))
+
+model_future.compile(optimizer='adam', loss='mean_squared_error')
+
+model_future.summary()
+
+
+#Now, training the model:
+history = model_future.fit(x_future_train, y_future_train, epochs=20, batch_size=1, validation_data=(x_future_test, y_future_test), verbose=2)
+
+
+#Predicting:
+predicted_errors = model_future.predict(x_future_test)
+
+#Inverse transforming:
+predicted_errors = scaler.inverse_transform(predicted_errors)
+y_future_test = scaler.inverse_transform(y_future_test)
